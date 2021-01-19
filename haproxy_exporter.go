@@ -20,7 +20,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"io/ioutil"
 	"net"
 	"net/http"
 	_ "net/http/pprof"
@@ -430,6 +429,10 @@ func (e *Exporter) parseInfo(i io.Reader) (versionInfo, error) {
 	s := bufio.NewScanner(i)
 	for s.Scan() {
 		line := s.Text()
+		if line == "#" {
+			continue
+		}
+
 		if !strings.Contains(line, ":") {
 			continue
 		}
@@ -541,24 +544,13 @@ func filterServerMetrics(filter string) (map[int]metricInfo, error) {
 }
 
 func main() {
-	const pidFileHelpText = `Path to HAProxy pid file.
-
-	If provided, the standard process metrics get exported for the HAProxy
-	process, prefixed with 'haproxy_process_...'. The haproxy_process exporter
-	needs to have read access to files owned by the HAProxy process. Depends on
-	the availability of /proc.
-
-	https://prometheus.io/docs/instrumenting/writing_clientlibs/#process-metrics.`
-
 	var (
 		listenAddress              = kingpin.Flag("web.listen-address", "Address to listen on for web interface and telemetry.").Default(":9101").String()
 		metricsPath                = kingpin.Flag("web.telemetry-path", "Path under which to expose metrics.").Default("/metrics").String()
-		haProxyScrapeURI           = kingpin.Flag("haproxy.scrape-uri", "URI on which to scrape HAProxy.").Default("http://localhost/;csv").String()
 		haProxySSLVerify           = kingpin.Flag("haproxy.ssl-verify", "Flag that enables SSL certificate verification for the scrape URI").Default("true").Bool()
 		haProxyServerMetricFields  = kingpin.Flag("haproxy.server-metric-fields", "Comma-separated list of exported server metrics. See http://cbonte.github.io/haproxy-dconv/configuration-1.5.html#9.1").Default(serverMetrics.String()).String()
 		haProxyServerExcludeStates = kingpin.Flag("haproxy.server-exclude-states", "Comma-separated list of exported server states to exclude. See https://cbonte.github.io/haproxy-dconv/1.8/management.html#9.1, field 17 statuus").Default(excludedServerStates).String()
 		haProxyTimeout             = kingpin.Flag("haproxy.timeout", "Timeout for trying to get stats from HAProxy.").Default("5s").Duration()
-		haProxyPidFile             = kingpin.Flag("haproxy.pid-file", pidFileHelpText).Default("").String()
 	)
 
 	promlogConfig := &promlog.Config{}
@@ -577,34 +569,15 @@ func main() {
 	level.Info(logger).Log("msg", "Starting haproxy_exporter", "version", version.Info())
 	level.Info(logger).Log("msg", "Build context", "context", version.BuildContext())
 
-	exporter, err := NewExporter(*haProxyScrapeURI, *haProxySSLVerify, selectedServerMetrics, *haProxyServerExcludeStates, *haProxyTimeout, logger)
-	if err != nil {
-		level.Error(logger).Log("msg", "Error creating an exporter", "err", err)
-		os.Exit(1)
-	}
-	prometheus.MustRegister(exporter)
-	prometheus.MustRegister(version.NewCollector("haproxy_exporter"))
-
-	if *haProxyPidFile != "" {
-		procExporter := prometheus.NewProcessCollector(prometheus.ProcessCollectorOpts{
-			PidFn: func() (int, error) {
-				content, err := ioutil.ReadFile(*haProxyPidFile)
-				if err != nil {
-					return 0, fmt.Errorf("can't read pid file: %s", err)
-				}
-				value, err := strconv.Atoi(strings.TrimSpace(string(content)))
-				if err != nil {
-					return 0, fmt.Errorf("can't parse pid file: %s", err)
-				}
-				return value, nil
-			},
-			Namespace: namespace,
-		})
-		prometheus.MustRegister(procExporter)
+	handler := &metricsHandler{
+		factory: func(scrapeURI string) (*Exporter, error) {
+			return NewExporter(scrapeURI, *haProxySSLVerify, selectedServerMetrics, *haProxyServerExcludeStates, *haProxyTimeout, logger)
+		},
+		metricsPath: *metricsPath,
 	}
 
 	level.Info(logger).Log("msg", "Listening on address", "address", *listenAddress)
-	http.Handle(*metricsPath, promhttp.Handler())
+	http.Handle(*metricsPath, handler)
 	http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		w.Write([]byte(`<html>
              <head><title>Haproxy Exporter</title></head>
@@ -619,3 +592,30 @@ func main() {
 		os.Exit(1)
 	}
 }
+
+type metricsHandler struct {
+	metricsPath string
+	factory func(scrapeURI string) (*Exporter, error)
+}
+
+func (m *metricsHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	target := r.URL.Query().Get("target")
+	if target == "" {
+		http.Error(w, "'target' parameter must be specified", http.StatusBadRequest)
+		return
+	}
+
+	registry := prometheus.NewRegistry()
+	exporter, err := m.factory(target)
+	if err != nil {
+		http.Error(w, fmt.Sprintf("faield to create exporter: %v", err), http.StatusInternalServerError)
+		return
+	}
+
+	registry.Register(exporter)
+
+	promhttp.HandlerFor(
+		registry, promhttp.HandlerOpts{ErrorHandling: promhttp.ContinueOnError},
+	).ServeHTTP(w, r)
+}
+

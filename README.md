@@ -29,33 +29,26 @@ core developers are accessible via the Prometheus Developers [mailinglist][].
 
 ### HTTP stats URL
 
-Specify custom URLs for the HAProxy stats port using the `--haproxy.scrape-uri`
-flag. For example, if you have set `stats uri /baz`,
+Specify custom URLs for the HAProxy stats port using the `target` parameter when calling the metrics endpoint (`/metrics` by default). 
+For instance, if you want to scrape the server `your-haproxy.com` at port `8888` and showing stats at `/stats` you'd start the exporter:
 
 ```bash
-haproxy_exporter --haproxy.scrape-uri="http://localhost:5000/baz?stats;csv"
+haproxy_exporter
 ```
 
-Or to scrape a remote host:
+Then scrape with:
 
-```bash
-haproxy_exporter --haproxy.scrape-uri="http://haproxy.example.com/haproxy?stats;csv"
+```
+http://localhost:9101/metrics?target=http%3A%2F%2Fyour-haproxy.com%3A8888%3Fstats%3Bcsv
 ```
 
-Note that the `;csv` is mandatory (and needs to be quoted).
+Note that the `;csv` is mandatory. If your stats port is protected by [basic auth][], add the credentials to the
+scrape URL. You should use relabel rules to pull data from multiple haproxy servers at the same time from a single exporter.
 
-If your stats port is protected by [basic auth][], add the credentials to the
-scrape URL:
-
-```bash
-haproxy_exporter  --haproxy.scrape-uri="http://user:pass@haproxy.example.com/haproxy?stats;csv"
-```
-
-You can also scrape HTTPS URLs. Certificate validation is enabled by default, but
-you can disable it using the `--no-haproxy.ssl-verify` flag:
+You can also scrape HTTPS URLs. Certificate validation is enabled by default, but you can disable it using the `--no-haproxy.ssl-verify` flag:
 
 ```bash
-haproxy_exporter --no-haproxy.ssl-verify --haproxy.scrape-uri="https://haproxy.example.com/haproxy?stats;csv"
+haproxy_exporter --no-haproxy.ssl-verify
 ```
 
 [basic auth]: https://cbonte.github.io/haproxy-dconv/configuration-1.6.html#4-stats%20auth
