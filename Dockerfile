@@ -1,12 +1,9 @@
-ARG ARCH="amd64"
-ARG OS="linux"
-FROM        quay.io/prometheus/busybox:latest
-LABEL maintainer="The Prometheus Authors <prometheus-developers@googlegroups.com>"
+FROM golang:1.15.6-buster AS builder
+ADD . /haproxy_exporter
+WORKDIR /haproxy_exporter
+RUN go build -o /bin/haproxy_exporter .
 
-ARG ARCH="amd64"
-ARG OS="linux"
-COPY .build/${OS}-${ARCH}/haproxy_exporter /bin/haproxy_exporter
-
-USER nobody
-ENTRYPOINT ["/bin/haproxy_exporter"]
+FROM debian:buster
+COPY --from=builder /bin/haproxy_exporter /bin/haproxy_exporter
 EXPOSE     9101
+CMD [ "/bin/haproxy_exporter" ]
